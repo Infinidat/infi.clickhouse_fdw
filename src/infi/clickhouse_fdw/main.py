@@ -51,7 +51,7 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
 
     def __init__(self, options, columns):
         super(ClickHouseDataWrapper, self).__init__(options, columns)
-        # TODO add username, password
+        # TODO add username, password, debug
         self.db_name    = options.get('db_name', 'default')
         self.db_url     = options.get('db_url', 'http://localhost:8123/')
         self.db         = Database(self.db_name, self.db_url)
@@ -99,7 +99,7 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
             if operator:
                 qs = qs.filter(**{qual.field_name + '__' + operator: qual.value})
             else:
-                log_to_postgres('Qual not pushed to ClickHouse: %s' % qual, WARNING)
+                self._warn('Qual not pushed to ClickHouse: %s' % qual)
         return qs
 
     def _get_column_stats(self, columns):
@@ -122,7 +122,7 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
             for row in self.db.select(sql):
                 column_stats[row.name]['size'] = row.size or 4 # prevent zeros 
         except:
-            log_to_postgres('Cannot calculate average column sizes', WARNING)
+            self._warn('Cannot calculate average column sizes')
         # Debug
         # for c in columns:
         #     log_to_postgres(column_stats[c])
@@ -150,6 +150,13 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
         columns = []
         sql = "SELECT name, type FROM system.columns where database='%s' and table='%s'" % (db.db_name, table)
         for row in db.select(sql):
-            columns.append(ColumnDefinition(row.name, type_name=_convert_column_type(row.type)))
+            try:
+                columns.append(ColumnDefinition(row.name, type_name=_convert_column_type(row.type)))
+            except KeyError:
+                cls._warn('Unsupported column type %s in table %s was skipped' % (row.type, table))
         merged_options = dict(options, table_name=table)
         return TableDefinition(table, columns=columns, options=merged_options)
+
+    @classmethod
+    def _warn(cls, msg):
+        log_to_postgres(msg, WARNING)
