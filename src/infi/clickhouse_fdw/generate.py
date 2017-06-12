@@ -9,7 +9,8 @@ CREATE EXTENSION IF NOT EXISTS multicorn;
 """
 
 CREATE_SERVER = """
-CREATE SERVER {server_name} FOREIGN DATA WRAPPER multicorn
+CREATE SERVER {server_name} 
+FOREIGN DATA WRAPPER multicorn
 OPTIONS (
   wrapper '{cls.__module__}.{cls.__name__}'
 );
@@ -26,15 +27,19 @@ OPTIONS (
 """
 
 
+def _echo_sql(sql):
+    click.echo(highlight(sql, PostgresLexer(), TerminalFormatter()))
+
+
+def _echo_warning(msg):
+    click.echo(click.style('[WARNING] ' + msg, fg='red'), err=True)
+
+
 class MyClickHouseDataWrapper(ClickHouseDataWrapper):
 
     @classmethod
     def _warn(cls, msg):
-        click.echo(click.style('[WARNING] ' + msg, fg='red'), err=True)
-
-
-def _echo_sql(sql):
-    click.echo(highlight(sql, PostgresLexer(), TerminalFormatter()))
+        _echo_warning(msg)
 
 
 @click.command()
@@ -47,7 +52,14 @@ def _echo_sql(sql):
 @click.option('--exclude', is_flag=True, help='Generate all tables except those named')
 def run(table, db_url, db_name, server_name, schema_name, pg_ver, exclude):
     '''
-    TBD
+    Generates SQL statements for defining Foreign Data Wrappers for ClickHouse tables.
+
+    If no table names are specified, wrappers are generated for all tables in the ClickHouse database.
+    If table names are given, wrappers will be generated only for those tables unless --exclude
+    is present, in which case all tables EXCEPT those listed will be processed.
+
+    If --pg-ver=9.4 is specified, explicit CREATE FOREIGN TABLE is generated for each table.
+    Otherwise a single IMPORT FOREIGN SCHEMA statement is used. 
     '''
     # Generate the table definitions even if they are not going to be printed, just to catch errors
     options = dict(db_url=db_url, db_name=db_name)
@@ -56,6 +68,8 @@ def run(table, db_url, db_name, server_name, schema_name, pg_ver, exclude):
     else:
         restriction_type = None
     table_defs = MyClickHouseDataWrapper.import_schema(schema_name, {}, options, restriction_type, table)
+    if not table_defs:
+        _echo_warning('No ClickHouse tables found.')
     # Output statements for initial setup
     click.echo()
     _echo_sql(CREATE_EXTENSION)
