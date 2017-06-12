@@ -23,6 +23,22 @@ OPERATORS = {
 }
 
 
+COLUMN_SIZES = {
+    'Date':         2,
+    'DateTime':     4,
+    'Float32':      4,
+    'Float64':      8,
+    'UInt8':        1,
+    'UInt16':       2,
+    'UInt32':       4,
+    'UInt64':       8,
+    'Int8':         1,
+    'Int16':        2,
+    'Int32':        4,
+    'Int64':        8
+}
+
+
 COLUMN_TYPES = {
     'Date':         'date',
     'DateTime':     'timestamp',
@@ -73,11 +89,10 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
         qs = self._build_query(quals, columns)
         total_size = sum(self.column_stats[c]['size'] for c in columns)
         ret = (qs.count(), total_size)
-        log_to_postgres(`ret`)
         return ret
 
     def get_path_keys(self):
-        return [((name,), stats['cardinality']) for name, stats in self.column_stats.iteritems()]
+        return [((name,), stats['average_rows']) for name, stats in self.column_stats.iteritems()]
 
     def execute(self, quals, columns, sortkeys=None):
         qs = self._build_query(quals, columns, sortkeys)
@@ -105,28 +120,34 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
     def _get_column_stats(self, columns):
         column_stats = {}
         # Get total number of rows
-        total = self.model.objects_in(self.db).count()
-        # Get average cardinality per column (total divided by number of unique values)
-        exprs = ['intDiv(%d, uniqCombined(%s)) as %s' % (total, c, c) for c in columns]
-        sql = 'SELECT %s FROM $db.`%s`' % (', '.join(exprs), self.table_name)
+        total_rows = self.model.objects_in(self.db).count()
+        # Get average rows per value in column (total divided by number of unique values)
+        exprs = ['intDiv(%d, uniqCombined(%s)) as %s' % (total_rows, c, c) for c in columns]
+        sql = "SELECT %s FROM $db.`%s`" % (', '.join(exprs), self.table_name)
         for row in self.db.select(sql):
             for c in columns:
-                column_stats[c] = dict(cardinality=getattr(row, c), size=4)
+                column_stats[c] = dict(average_rows=getattr(row, c), size=4)
         # Get average size per column. This may fail because data_uncompressed_bytes is a recent addition
-        try:
-            sql = """
-                  SELECT name, intDiv(data_uncompressed_bytes, %d) as size
-                  FROM system.columns 
-                  WHERE database='%s' AND table='%s'
-                  """ % (total, self.db_name, self.table_name)
-            for row in self.db.select(sql):
-                column_stats[row.name]['size'] = row.size or 4 # prevent zeros 
-        except:
-            self._warn('Cannot calculate average column sizes')
+        sql = "SELECT * FROM system.columns WHERE database='%s' AND table='%s'" % (self.db_name, self.table_name)
+        for col_def in self.db.select(sql):
+            column_stats[col_def.name]['size'] = self._calc_col_size(col_def, total_rows) 
         # Debug
-        # for c in columns:
-        #     log_to_postgres(column_stats[c])
+        for c in columns:
+            log_to_postgres(c + ': ' + `column_stats[c]`)
         return column_stats
+
+    def _calc_col_size(self, col_def, total_rows):
+        size = 0
+        if col_def.type in COLUMN_SIZES:
+            # A column with a fixed size
+            size = COLUMN_SIZES[col_def.type]
+        elif hasattr(col_def, 'data_uncompressed_bytes'):
+            # Non fixed size, calculate average size
+            size = int(float(col_def.data_uncompressed_bytes) / total_rows)
+        elif hasattr(col_def, 'bytes'):
+            # Assume x10 compression and calculate average size
+            size = int(float(col_def.bytes) * 10 / total_rows)
+        return size or 8 
 
     @classmethod
     def import_schema(cls, schema, srv_options, options, restriction_type, restricts):
