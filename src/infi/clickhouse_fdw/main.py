@@ -92,7 +92,7 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
         return ret
 
     def get_path_keys(self):
-        return [((name,), stats['average_rows']) for name, stats in self.column_stats.iteritems()]
+        return [((name,), stats['average_rows']) for name, stats in self.column_stats.items()]
 
     def execute(self, quals, columns, sortkeys=None):
         qs = self._build_query(quals, columns, sortkeys)
@@ -133,7 +133,7 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
             column_stats[col_def.name]['size'] = self._calc_col_size(col_def, total_rows) 
         # Debug
         for c in columns:
-            log_to_postgres(c + ': ' + `column_stats[c]`)
+            log_to_postgres(c + ': ' + repr(column_stats[c]))
         return column_stats
 
     def _calc_col_size(self, col_def, total_rows):

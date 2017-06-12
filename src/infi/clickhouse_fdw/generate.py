@@ -1,5 +1,5 @@
 import click
-from main import ClickHouseDataWrapper
+from infi.clickhouse_fdw.main import ClickHouseDataWrapper
 from pygments import highlight
 from pygments.lexers import PostgresLexer
 from pygments.formatters import TerminalFormatter
