@@ -4,22 +4,39 @@ from multicorn.utils import log_to_postgres, WARNING
 from infi.clickhouse_orm.database import Database
 from infi.clickhouse_orm.models import ModelBase
 from infi.clickhouse_orm.utils import parse_tsv
+from infi.clickhouse_orm.query import register_operator, LikeOperator, NotOperator
 
+
+# Additional queryset operators to support operators sent from PostgreSQL
+
+
+
+class CustomLikeOperator(LikeOperator):
+
+    def to_sql(self, model_cls, field_name, value):
+        # Undo the quoting of % characters that happens in LikeOperator
+        return super(CustomLikeOperator, self).to_sql(model_cls, field_name, value).replace('\\\\%', '%')
+
+
+register_operator('like', CustomLikeOperator('{}', True))
+register_operator('ilike', CustomLikeOperator('{}', False))
+register_operator('not_like', NotOperator(CustomLikeOperator('{}', True)))
+register_operator('not_ilike', NotOperator(CustomLikeOperator('{}', False)))
 
 
 OPERATORS = {
-    '=': 'eq',
-    '<': 'lt',
-    '>': 'gt',
-    '<=': 'lte',
-    '>=': 'gte',
-    #'<>': 'ne',
-    #'~~': 'contains',
-    #'~~*': 'icontains',
-    #'!~~*': not_(sqlops.ilike_op),
-    #'!~~': not_(sqlops.like_op),
-    ('=', True): 'in',
-    #('<>', False): not_(sqlops.in_op)
+    '=':            'eq',
+    '<':            'lt',
+    '>':            'gt',
+    '<=':           'lte',
+    '>=':           'gte',
+    '<>':           'ne',
+    '~~':           'like',
+    '~~*':          'ilike',
+    '!~~':          'not_like',
+    '!~~*':         'not_ilike',
+    ('=', True):    'in',
+    ('<>', False):  'not_in'
 }
 
 
@@ -44,14 +61,14 @@ COLUMN_TYPES = {
     'DateTime':     'timestamp',
     'Float32':      'real',
     'Float64':      'double precision',
-    'UInt8':        'smallint',
-    'UInt16':       'smallint',
-    'UInt32':       'integer',
-    'UInt64':       'bigint',
-    'Int8':         'smallint',
+    'Int8':         'smallint',      # there's no single-byte integer type
     'Int16':        'smallint',
     'Int32':        'integer',
     'Int64':        'bigint',
+    'UInt8':        'smallint',      # there are no unsigned types, so use a type that's large enough
+    'UInt16':       'integer',       # ditto
+    'UInt32':       'bigint',        # ditto
+    'UInt64':       'numeric(20,0)', # ditto
     'String':       'varchar',
 }
 
@@ -78,9 +95,7 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
     def _build_model(self):
         sql = "SELECT name, type FROM system.columns where database='%s' and table='%s'" % (self.db_name, self.table_name)
         cols = [(row.name, row.type) for row in self.db.select(sql)]
-        cls = ModelBase.create_ad_hoc_model(cols)
-        cls.__name__ = self.table_name
-        return cls
+        return ModelBase.create_ad_hoc_model(cols, model_name=self.table_name)
 
     def can_sort(self, sortkeys):
         return sortkeys
@@ -105,10 +120,11 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
         return qs.as_sql().split('\n')
 
     def _build_query(self, quals, columns, sortkeys=None):
-        order = columns
+        columns = columns or [self._get_smallest_column()] # use a small column when PostgreSQL doesn't need any columns
+        qs = self.model.objects_in(self.db).only(*columns)
         if sortkeys:
             order = ['-' + sk.attname if sk.is_reversed else sk.attname for sk in sortkeys]
-        qs = self.model.objects_in(self.db).only(*columns).order_by(*order)
+            qs = qs.order_by(*order)
         for qual in quals:
             operator = OPERATORS.get(qual.operator)
             if operator:
@@ -149,6 +165,10 @@ class ClickHouseDataWrapper(ForeignDataWrapper):
             size = int(float(col_def.bytes) * 10 / total_rows)
         return size or 8 
 
+    def _get_smallest_column(self):
+        item = min(self.column_stats.items(), key=lambda item: item[1]['size'])
+        return item[0]
+        
     @classmethod
     def import_schema(cls, schema, srv_options, options, restriction_type, restricts):
         db_name = options.get('db_name', 'default')
